@@ -15,10 +15,11 @@
  */
 package com.datastax.killrweather
 
+import java.net.InetAddress
+
 import scala.util.Try
 import com.datastax.driver.core.ConsistencyLevel
 import com.datastax.spark.connector.cql.{AuthConf, NoAuthConf, PasswordAuthConf}
-import com.datastax.spark.connector.util.Logging
 import com.typesafe.config.{Config, ConfigFactory}
 
 /**
@@ -42,7 +43,9 @@ import com.typesafe.config.{Config, ConfigFactory}
  *
  * @param conf Optional config for test
  */
-final class WeatherSettings(conf: Option[Config] = None) extends Logging with Serializable {
+final class WeatherSettings(conf: Option[Config] = None) extends Serializable {
+
+  val localAddress = InetAddress.getLocalHost.getHostAddress
 
   val rootConfig = conf match {
     case Some(c) => c.withFallback(ConfigFactory.load)
@@ -61,14 +64,12 @@ final class WeatherSettings(conf: Option[Config] = None) extends Logging with Se
     "spark.cleaner.ttl") getOrElse (3600*2)
 
   val SparkStreamingBatchInterval = withFallback[Int](Try(spark.getInt("streaming.batch.interval")),
-    "spark.streaming.batch.interval") getOrElse 1
+    "spark.streaming.batch.interval") getOrElse 1000
 
   val SparkCheckpointDir = killrweather.getString("spark.checkpoint.dir")
 
   val CassandraHosts = withFallback[String](Try(cassandra.getString("connection.host")),
-    "spark.cassandra.connection.host") getOrElse "127.0.0.1"
-
-  logInfo(s"Starting up with spark master '$SparkMaster' cassandra hosts '$CassandraHosts'")
+    "spark.cassandra.connection.host") getOrElse localAddress
 
   val CassandraAuthUsername: Option[String] = Try(cassandra.getString("auth.username")).toOption
     .orElse(sys.props.get("spark.cassandra.auth.username"))
@@ -147,7 +148,6 @@ final class WeatherSettings(conf: Option[Config] = None) extends Logging with Se
 
   val CassandraDefaultMeasuredInsertsCount: Int = 128
 
-  //val KafkaHosts: immutable.Seq[String] = Util.immutableSeq(kafka.getStringList("hosts"))
   val KafkaGroupId = kafka.getString("group.id")
   val KafkaTopicRaw = kafka.getString("topic.raw")
   val KafkaEncoderFqcn = kafka.getString("encoder.fqcn")

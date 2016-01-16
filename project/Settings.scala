@@ -14,46 +14,51 @@
  * limitations under the License.
  */
 
+import scala.language.postfixOps
+
 import sbt._
 import sbt.Keys._
 import net.virtualvoid.sbt.graph.Plugin.graphSettings
-
-import scala.language.postfixOps
+import com.scalapenos.sbt.prompt.SbtPrompt.autoImport._
 
 object Settings extends Build {
 
   lazy val buildSettings = Seq(
-    name := "KillrWeather.com",
+    name := "KillrWeather",
     normalizedName := "killrweather",
     organization := "com.datastax.killrweather",
     organizationHomepage := Some(url("http://www.github.com/killrweather/killrweather")),
     scalaVersion := Versions.Scala,
     homepage := Some(url("https://github.com/killrweather/killrweather")),
-    licenses := Seq(("Apache License, Version 2.0", url("http://www.apache.org/licenses/LICENSE-2.0")))
+    licenses := Seq(("Apache License, Version 2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))),
+    promptTheme := ScalapenosTheme
   )
 
-  override lazy val settings = super.settings ++ buildSettings ++ Seq(shellPrompt := ShellPrompt.prompt)
+  override lazy val settings = super.settings ++ buildSettings
 
   val parentSettings = buildSettings ++ Seq(
     publishArtifact := false,
     publish := {}
   )
 
-  lazy val defaultSettings = testSettings ++ graphSettings ++ Seq(
+  lazy val defaultSettings = testSettings ++ graphSettings ++ sigarSettings ++ Seq(
     autoCompilerPlugins := true,
-    libraryDependencies <+= scalaVersion { v => compilerPlugin("org.scala-lang.plugins" % "continuations" % v) },
-    scalacOptions ++= Seq("-encoding", "UTF-8", s"-target:jvm-${Versions.JDK}", "-feature", "-language:_", "-deprecation", "-unchecked", "-Xfatal-warnings", "-Xlint"),
+    // removed "-Xfatal-warnings" as temporary workaround for log4j fatal error.
+    scalacOptions ++= Seq("-encoding", "UTF-8", s"-target:jvm-${Versions.JDK}", "-feature", "-language:_", "-deprecation", "-unchecked", "-Xlint"),
     javacOptions in Compile ++= Seq("-encoding", "UTF-8", "-source", Versions.JDK, "-target", Versions.JDK, "-Xlint:deprecation", "-Xlint:unchecked"),
+    run in Compile <<= Defaults.runTask(fullClasspath in Compile, mainClass in (Compile, run), runner in (Compile, run)),
     ivyLoggingLevel in ThisBuild := UpdateLogging.Quiet,
     parallelExecution in ThisBuild := false,
-    parallelExecution in Global := false
+    parallelExecution in Global := false/*,
+    ivyXML := <dependencies>
+      <exclude org="org.slf4j" module="slf4j-log4j12"/>
+    </dependencies>*/
   )
 
   val tests = inConfig(Test)(Defaults.testTasks) ++ inConfig(IntegrationTest)(Defaults.itSettings)
 
   val testOptionSettings = Seq(
-    Tests.Argument(TestFrameworks.ScalaTest, "-oDF"),
-    Tests.Argument(TestFrameworks.JUnit, "-oDF", "-v", "-a")
+    Tests.Argument(TestFrameworks.ScalaTest, "-oDF")
   )
 
   lazy val testSettings = tests ++ Seq(
@@ -61,34 +66,18 @@ object Settings extends Build {
     parallelExecution in IntegrationTest := false,
     testOptions in Test ++= testOptionSettings,
     testOptions in IntegrationTest ++= testOptionSettings,
+    baseDirectory in Test := baseDirectory.value.getParentFile(),
     fork in Test := true,
     fork in IntegrationTest := true,
     (compile in IntegrationTest) <<= (compile in Test, compile in IntegrationTest) map { (_, c) => c },
     managedClasspath in IntegrationTest <<= Classpaths.concat(managedClasspath in IntegrationTest, exportedProducts in Test)
   )
 
-  lazy val withSigar = Seq(javaOptions in run ++= Seq(s"-Djava.library.path=./sigar", "-Xms128m", "-Xmx1024m"))
+  lazy val sigarSettings = Seq(
+    unmanagedSourceDirectories in (Compile,run) += baseDirectory.value.getParentFile / "sigar",
+    javaOptions in run ++= {
+      System.setProperty("java.library.path", file("./sigar").getAbsolutePath)
+      Seq("-Xms128m", "-Xmx1024m")
+    })
 
-}
-
-/**
- * TODO make plugin
- * Shell prompt which shows the current project, git branch
- */
-object ShellPrompt {
-
-  def gitBranches = ("git branch" lines_! devnull).mkString
-
-  def current: String = """\*\s+([\.\w-]+)""".r findFirstMatchIn gitBranches map (_ group 1) getOrElse "-"
-
-  def currBranch: String = ("git status -sb" lines_! devnull headOption) getOrElse "-" stripPrefix "## "
-
-  lazy val prompt = (state: State) =>
-    "%s:%s:%s> ".format("killrweather", Project.extract (state).currentProject.id, currBranch)
-
-  object devnull extends ProcessLogger {
-    def info(s: => String) {}
-    def error(s: => String) {}
-    def buffer[T](f: => T): T = f
-  }
 }

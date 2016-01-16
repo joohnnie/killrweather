@@ -28,6 +28,7 @@ object WeatherEvent {
   sealed trait LifeCycleEvent extends WeatherEvent
   case object OutputStreamInitialized extends LifeCycleEvent
   case object NodeInitialized extends LifeCycleEvent
+  case object Start extends LifeCycleEvent
   case object DataFeedStarted extends LifeCycleEvent
   case object Shutdown extends LifeCycleEvent
   case object TaskCompleted extends LifeCycleEvent
@@ -49,8 +50,7 @@ object WeatherEvent {
 
   sealed trait Task extends Serializable
   case object QueryTask extends Task
-
-  case class KafkaMessageEnvelope[K,V](topic: String, key: K, messages: V*) extends Serializable
+  case object GracefulShutdown extends LifeCycleEvent
 
   /**
    * Quick access lookup table for sky_condition. Useful for potential analytics.

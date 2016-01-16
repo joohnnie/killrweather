@@ -18,42 +18,74 @@ package com.datastax.killrweather
 import java.io.{BufferedInputStream, FileInputStream, File => JFile}
 import java.util.zip.GZIPInputStream
 
+import scala.util.Try
+import akka.japi.Util.immutableSeq
+import akka.http.scaladsl.model.{ContentTypes, HttpHeader, RequestEntity}
 import com.typesafe.config.ConfigFactory
-
-import scala.util.control.NonFatal
+import Weather.Day
 
 private[killrweather] trait ClientHelper {
+  import Sources._
 
   private val config = ConfigFactory.load
   protected val BasePort = 2550
+  protected val HttpHost = config.getString("killrweather.http.host")
+  protected val HttpPort = config.getInt("killrweather.http.port")
   protected val DefaultPath = config.getString("killrweather.data.load.path")
   protected val DefaultExtension = config.getString("killrweather.data.file.extension")
-  protected val DefaultTopic = config.getString("kafka.topic.raw")
-  protected val DefaultGroup = config.getString("kafka.group.id")
-
-  def fileFeed(path: String = DefaultPath, extension: String = DefaultExtension): Set[JFile] =
-    new JFile(path).list.collect {
-      case name if name.endsWith(extension) =>
-        new JFile(s"$path/$name".replace("./", ""))
+  protected val KafkaHosts = immutableSeq(config.getStringList("kafka.hosts")).toSet
+  protected val KafkaTopic = config.getString("kafka.topic.raw")
+  protected val KafkaKey = config.getString("kafka.group.id")
+  protected val KafkaBatchSendSize = config.getInt("kafka.batch.send.size")
+  protected val initialData: Set[FileSource] = new JFile(DefaultPath).list.collect {
+      case name if name.endsWith(DefaultExtension) =>
+        FileSource(new JFile(s"$DefaultPath/$name".replace("./", "")))
     }.toSet
+}
 
-  // slinking away in shame for writing this..
-  protected def getLines(file: JFile): Seq[String] = try {
-    file match {
-      case f if f.getAbsolutePath endsWith ".gz" =>
-        val a = scala.io.Source.fromInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(file))))
-        val b = a.getLines.toList
-        a.close()
-        b
-      case f =>
-        val a = scala.io.Source.fromFile(file)
-        val b = a.getLines.toList
-        a.close()
-        b
+private[killrweather] object Sources {
+  sealed trait HttpSource extends Serializable {
+    def header: HttpHeader
+    def entity: RequestEntity
+  }
+  object HttpSource {
+    def unapply[T](headers: Seq[HttpHeader], entity: RequestEntity): Option[HttpSource] =
+      headers.collectFirst {
+        case header if fileSource(header) => HeaderSource(header, entity)
+        case header if entitySource(header, entity) => EntitySource(header, entity)
+      }
+  }
+  case class EntitySource[T](header: HttpHeader, entity: RequestEntity) extends HttpSource {
+    def extract: Iterator[T] = Iterator.empty // not supported yet
+  }
+  case class HeaderSource(header: HttpHeader, entity: RequestEntity, sources: Array[String]) extends HttpSource {
+    def extract: Iterator[FileSource] = sources.map(new JFile(_)).filter(_.exists).map(FileSource(_)).toIterator
+  }
+  object HeaderSource {
+    def apply(header: HttpHeader, entity: RequestEntity): HeaderSource =
+      HeaderSource(header, entity, header.value.split(","))
+  }
+  case class FileSource(data: Array[String], name: String) {
+    def days: Seq[Day] = data.map(Day(_)).toSeq
+  }
+  object FileSource {
+    def apply(file: JFile): FileSource = {
+      val src = file match {
+        case f if f.getAbsolutePath endsWith ".gz" =>
+          scala.io.Source.fromInputStream(new GZIPInputStream(new BufferedInputStream(new FileInputStream(file))), "utf-8")
+        case f =>
+          scala.io.Source.fromFile(file, "utf-8")
+      }
+      val read = src.getLines.toList
+      Try(src.close())
+      FileSource(read.toArray, file.getName)
     }
-  } catch { case NonFatal(e) =>
-      println(s"Error parsing lines from file $file: $e"); throw e
   }
 
+  private def fileSource(h: HttpHeader): Boolean =
+    h.name == "X-DATA-FEED" && h.value.nonEmpty && h.value.contains(JFile.separator) // more validation..
+
+  private def entitySource(h: HttpHeader, e: RequestEntity): Boolean =
+    h.name == "X-DATA-FEED" && e.contentType == ContentTypes.`application/json` // more validation..
 }
 
